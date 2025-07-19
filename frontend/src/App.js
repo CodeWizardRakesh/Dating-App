@@ -377,8 +377,8 @@ function App() {
       ) : (
         <div className="text-center py-12">
           <div className="text-6xl text-gray-400 mb-4">🔍</div>
-          <h3 className="text-xl font-semibold text-gray-900 mb-2">No matches found</h3>
-          <p className="text-gray-600">Try uploading more profile images or adjusting your celebrity preferences</p>
+          <h3 className="text-xl font-semibold text-gray-900 mb-2">No images found</h3>
+          <p className="text-gray-600">Upload some images first to see similarity scores with your selected celebrities</p>
           <button
             onClick={() => setCurrentStep('celebrities')}
             className="mt-4 bg-purple-600 text-white px-6 py-2 rounded-lg hover:bg-purple-700 transition-colors duration-200"
