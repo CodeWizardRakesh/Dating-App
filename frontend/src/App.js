@@ -332,11 +332,11 @@ function App() {
       ) : matches.length > 0 ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {matches.map((match, index) => (
-            <div key={match.profile.id} className="bg-white rounded-xl shadow-lg overflow-hidden hover:shadow-xl transition-shadow duration-200">
+            <div key={index} className="bg-white rounded-xl shadow-lg overflow-hidden hover:shadow-xl transition-shadow duration-200">
               <div className="aspect-square bg-gray-100">
                 <img
                   src={`data:image/jpeg;base64,${match.profile.image_base64}`}
-                  alt={`Match ${index + 1}`}
+                  alt={`Your Image ${index + 1}`}
                   className="w-full h-full object-cover"
                 />
               </div>
@@ -347,12 +347,26 @@ function App() {
                     {(match.similarity_score * 100).toFixed(1)}% match
                   </span>
                 </div>
-                <div className="w-full bg-gray-200 rounded-full h-2">
+                <div className="mb-2">
+                  <p className="text-sm text-gray-600">Best match: <span className="font-semibold text-gray-800">{match.best_celebrity_match}</span></p>
+                </div>
+                <div className="w-full bg-gray-200 rounded-full h-2 mb-3">
                   <div
                     className="bg-gradient-to-r from-purple-600 to-pink-600 h-2 rounded-full transition-all duration-500"
                     style={{ width: `${match.similarity_score * 100}%` }}
                   ></div>
                 </div>
+                {match.all_celebrity_scores && (
+                  <div className="text-xs text-gray-500">
+                    <p className="font-medium mb-1">All celebrity similarities:</p>
+                    {match.all_celebrity_scores.map((score, idx) => (
+                      <div key={idx} className="flex justify-between">
+                        <span>{score.celebrity_name}:</span>
+                        <span>{(score.similarity_score * 100).toFixed(1)}%</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           ))}
