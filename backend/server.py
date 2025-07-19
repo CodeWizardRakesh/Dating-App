@@ -43,7 +43,16 @@ class User(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     email: str
     name: str
+    age: Optional[int] = None
+    bio: Optional[str] = None
+    location: Optional[str] = None
+    gender: Optional[str] = None
+    looking_for: Optional[str] = None
+    photos: List[str] = []  # Base64 images
+    main_photo_embedding: Optional[List[float]] = None
+    is_active: bool = True
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    last_active: datetime = Field(default_factory=datetime.utcnow)
 
 class Celebrity(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -53,24 +62,35 @@ class Celebrity(BaseModel):
     embedding: List[float]
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
-class UserProfile(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    user_id: str
-    image_base64: str
-    embedding: List[float]
-    similarity_score: Optional[float] = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-
-class MatchResult(BaseModel):
-    profile: UserProfile
-    similarity_score: float
-    rank: int
-
 class UserPreference(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     user_id: str
     selected_celebrities: List[str]  # Celebrity IDs
     composite_embedding: List[float]
+    age_range: List[int] = [18, 50]
+    max_distance: int = 50  # miles
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+class UserAction(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    user_id: str
+    target_user_id: str
+    action: str  # "like", "pass", "super_like"
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+class Match(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    user1_id: str
+    user2_id: str
+    similarity_score: float
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    last_message_at: Optional[datetime] = None
+
+class Message(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    match_id: str
+    sender_id: str
+    message: str
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 # Utility Functions
@@ -181,15 +201,38 @@ async def search_celebrity_images(celebrity_name, num_images=3):
 
 @api_router.get("/")
 async def root():
-    return {"message": "Celebrity Face Matching API"}
+    return {"message": "FaceMatch Dating API"}
 
-@api_router.post("/users/register")
-async def register_user(email: str = Form(...), name: str = Form(...)):
-    """Register a new user"""
+@api_router.post("/auth/register")
+async def register_user(
+    email: str = Form(...), 
+    name: str = Form(...),
+    age: int = Form(...),
+    bio: str = Form(""),
+    location: str = Form(""),
+    gender: str = Form(""),
+    looking_for: str = Form("")
+):
+    """Register a new user with profile information"""
     try:
-        user = User(email=email, name=name)
+        # Check if user already exists
+        existing_user = await db.users.find_one({"email": email})
+        if existing_user:
+            raise HTTPException(status_code=400, detail="Email already registered")
+        
+        user = User(
+            email=email,
+            name=name,
+            age=age,
+            bio=bio,
+            location=location,
+            gender=gender,
+            looking_for=looking_for
+        )
         await db.users.insert_one(user.dict())
-        return {"message": "User registered successfully", "user_id": user.id}
+        return {"message": "User registered successfully", "user": user.dict()}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -232,8 +275,14 @@ async def add_celebrity(name: str = Form(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @api_router.post("/users/{user_id}/preferences")
-async def set_user_preferences(user_id: str, celebrity_ids: List[str]):
-    """Set user's celebrity preferences and calculate composite embedding"""
+async def set_user_preferences(
+    user_id: str, 
+    celebrity_ids: List[str],
+    age_min: int = Form(18),
+    age_max: int = Form(50),
+    max_distance: int = Form(50)
+):
+    """Set user's celebrity preferences and dating filters"""
     try:
         # Get selected celebrities and their embeddings
         celebrities = await db.celebrities.find({"id": {"$in": celebrity_ids}}).to_list(100)
@@ -251,7 +300,9 @@ async def set_user_preferences(user_id: str, celebrity_ids: List[str]):
         preferences = UserPreference(
             user_id=user_id,
             selected_celebrities=celebrity_ids,
-            composite_embedding=composite_embedding
+            composite_embedding=composite_embedding,
+            age_range=[age_min, age_max],
+            max_distance=max_distance
         )
         
         # Remove existing preferences for this user
@@ -260,21 +311,22 @@ async def set_user_preferences(user_id: str, celebrity_ids: List[str]):
         # Insert new preferences
         await db.user_preferences.insert_one(preferences.dict())
         
-        return {"message": "Preferences saved successfully", "composite_embedding_length": len(composite_embedding)}
+        return {"message": "Preferences saved successfully"}
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@api_router.post("/users/{user_id}/upload-profiles")
-async def upload_user_profiles(user_id: str, files: List[UploadFile] = File(...)):
-    """Upload multiple profile images and extract embeddings"""
+@api_router.post("/users/{user_id}/photos")
+async def upload_user_photos(user_id: str, files: List[UploadFile] = File(...)):
+    """Upload user profile photos"""
     try:
-        if len(files) > 100:
-            raise HTTPException(status_code=400, detail="Maximum 100 images allowed")
+        if len(files) > 6:
+            raise HTTPException(status_code=400, detail="Maximum 6 photos allowed")
         
-        uploaded_profiles = []
+        photos = []
+        main_photo_embedding = None
         
-        for file in files:
+        for i, file in enumerate(files):
             # Read and process image
             content = await file.read()
             image = Image.open(io.BytesIO(content))
@@ -284,95 +336,294 @@ async def upload_user_profiles(user_id: str, files: List[UploadFile] = File(...)
                 image = image.convert('RGB')
             
             # Resize for consistency
-            image = image.resize((224, 224))
+            image = image.resize((400, 400))
             
             # Convert to base64
             buffer = io.BytesIO()
             image.save(buffer, format='JPEG')
             image_base64 = base64.b64encode(buffer.getvalue()).decode()
+            photos.append(image_base64)
             
-            # Extract embedding
-            embedding = base64_to_embedding(image_base64)
-            
-            # Create profile record
-            profile = UserProfile(
-                user_id=user_id,
-                image_base64=image_base64,
-                embedding=embedding
-            )
-            
-            await db.user_profiles.insert_one(profile.dict())
-            uploaded_profiles.append(profile)
+            # Use first photo for main embedding
+            if i == 0:
+                main_photo_embedding = base64_to_embedding(image_base64)
         
-        return {
-            "message": f"Successfully uploaded {len(uploaded_profiles)} profiles",
-            "profile_count": len(uploaded_profiles)
-        }
+        # Update user with photos and main embedding
+        await db.users.update_one(
+            {"id": user_id},
+            {"$set": {
+                "photos": photos,
+                "main_photo_embedding": main_photo_embedding,
+                "last_active": datetime.utcnow()
+            }}
+        )
+        
+        return {"message": f"Successfully uploaded {len(photos)} photos", "photo_count": len(photos)}
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@api_router.get("/users/{user_id}/matches")
-async def get_matches(user_id: str):
-    """Get similarity scores between user's uploaded images and their selected celebrities"""
+@api_router.get("/users/{user_id}/discover")
+async def discover_users(user_id: str, limit: int = 10):
+    """Discover potential matches based on celebrity preferences"""
     try:
         # Get user preferences
         preferences = await db.user_preferences.find_one({"user_id": user_id})
         if not preferences:
             raise HTTPException(status_code=404, detail="User preferences not found")
         
-        # Get selected celebrities
-        celebrity_ids = preferences["selected_celebrities"]
-        celebrities = await db.celebrities.find({"id": {"$in": celebrity_ids}}).to_list(100)
+        # Get current user
+        current_user = await db.users.find_one({"id": user_id})
+        if not current_user:
+            raise HTTPException(status_code=404, detail="User not found")
         
-        if not celebrities:
-            raise HTTPException(status_code=404, detail="Selected celebrities not found")
+        composite_embedding = preferences["composite_embedding"]
+        age_range = preferences["age_range"]
         
-        # Get user's uploaded profiles
-        user_profiles = await db.user_profiles.find({"user_id": user_id}).to_list(1000)
+        # Get users already interacted with
+        interacted_users = await db.user_actions.find({"user_id": user_id}).to_list(1000)
+        interacted_user_ids = [action["target_user_id"] for action in interacted_users]
+        interacted_user_ids.append(user_id)  # Exclude self
         
-        if not user_profiles:
-            return {"message": "No uploaded images found", "matches": []}
+        # Build filter criteria
+        filter_criteria = {
+            "id": {"$nin": interacted_user_ids},
+            "is_active": True,
+            "photos": {"$ne": []},
+            "main_photo_embedding": {"$exists": True, "$ne": None}
+        }
         
-        # Calculate similarity scores for each user image against each celebrity
-        matches = []
-        for profile in user_profiles:
-            profile_similarities = []
-            
-            # Compare against each selected celebrity
-            for celebrity in celebrities:
-                similarity = calculate_similarity(profile["embedding"], celebrity["embedding"])
-                profile_similarities.append({
-                    "celebrity_name": celebrity["name"],
-                    "celebrity_id": celebrity["id"],
+        # Add age filter if available
+        if age_range and current_user.get("age"):
+            filter_criteria["age"] = {"$gte": age_range[0], "$lte": age_range[1]}
+        
+        # Add gender preference filter
+        if current_user.get("looking_for") and current_user["looking_for"] != "everyone":
+            filter_criteria["gender"] = current_user["looking_for"]
+        
+        # Get potential matches
+        potential_matches = await db.users.find(filter_criteria).to_list(100)
+        
+        # Calculate similarity scores and rank
+        matches_with_scores = []
+        for user in potential_matches:
+            if user["main_photo_embedding"]:
+                similarity = calculate_similarity(composite_embedding, user["main_photo_embedding"])
+                matches_with_scores.append({
+                    "user": user,
                     "similarity_score": similarity
                 })
-            
-            # Get the best similarity score for this profile
-            best_similarity = max(profile_similarities, key=lambda x: x["similarity_score"])
-            
-            match_result = {
-                "profile": UserProfile(**profile),
-                "best_celebrity_match": best_similarity["celebrity_name"],
-                "similarity_score": best_similarity["similarity_score"],
-                "all_celebrity_scores": profile_similarities,
-                "rank": 0  # Will be set after sorting
-            }
-            matches.append(match_result)
         
-        # Sort by best similarity score (descending)
-        matches.sort(key=lambda x: x["similarity_score"], reverse=True)
+        # Sort by similarity score (descending) and limit results
+        matches_with_scores.sort(key=lambda x: x["similarity_score"], reverse=True)
+        top_matches = matches_with_scores[:limit]
         
-        # Assign ranks
-        for i, match in enumerate(matches):
-            match["rank"] = i + 1
+        # Format response
+        discovered_users = []
+        for match in top_matches:
+            user_data = match["user"]
+            discovered_users.append({
+                "id": user_data["id"],
+                "name": user_data["name"],
+                "age": user_data.get("age"),
+                "bio": user_data.get("bio", ""),
+                "location": user_data.get("location", ""),
+                "photos": user_data["photos"],
+                "similarity_score": match["similarity_score"],
+                "match_percentage": int(match["similarity_score"] * 100)
+            })
         
         return {
-            "user_id": user_id,
-            "selected_celebrities": [{"id": c["id"], "name": c["name"]} for c in celebrities],
-            "total_images": len(matches),
-            "matches": matches
+            "users": discovered_users,
+            "count": len(discovered_users)
         }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.post("/users/{user_id}/action")
+async def user_action(
+    user_id: str,
+    target_user_id: str = Form(...),
+    action: str = Form(...)  # "like", "pass", "super_like"
+):
+    """Record user action (like, pass, super_like)"""
+    try:
+        # Check if action already exists
+        existing_action = await db.user_actions.find_one({
+            "user_id": user_id,
+            "target_user_id": target_user_id
+        })
+        
+        if existing_action:
+            return {"message": "Action already recorded"}
+        
+        # Record the action
+        user_action = UserAction(
+            user_id=user_id,
+            target_user_id=target_user_id,
+            action=action
+        )
+        await db.user_actions.insert_one(user_action.dict())
+        
+        # Check for mutual like to create match
+        if action == "like" or action == "super_like":
+            mutual_action = await db.user_actions.find_one({
+                "user_id": target_user_id,
+                "target_user_id": user_id,
+                "action": {"$in": ["like", "super_like"]}
+            })
+            
+            if mutual_action:
+                # Get user preferences to calculate similarity score
+                preferences = await db.user_preferences.find_one({"user_id": user_id})
+                target_user = await db.users.find_one({"id": target_user_id})
+                
+                similarity_score = 0.0
+                if preferences and target_user and target_user.get("main_photo_embedding"):
+                    similarity_score = calculate_similarity(
+                        preferences["composite_embedding"],
+                        target_user["main_photo_embedding"]
+                    )
+                
+                # Create match
+                match = Match(
+                    user1_id=user_id,
+                    user2_id=target_user_id,
+                    similarity_score=similarity_score
+                )
+                await db.matches.insert_one(match.dict())
+                
+                return {
+                    "message": "It's a match!",
+                    "match_created": True,
+                    "match_id": match.id,
+                    "similarity_score": similarity_score
+                }
+        
+        return {"message": "Action recorded", "match_created": False}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.get("/users/{user_id}/matches")
+async def get_user_matches(user_id: str):
+    """Get user's matches"""
+    try:
+        # Find matches where user is involved
+        matches = await db.matches.find({
+            "$or": [
+                {"user1_id": user_id},
+                {"user2_id": user_id}
+            ]
+        }).to_list(100)
+        
+        match_data = []
+        for match in matches:
+            # Get the other user's info
+            other_user_id = match["user2_id"] if match["user1_id"] == user_id else match["user1_id"]
+            other_user = await db.users.find_one({"id": other_user_id})
+            
+            if other_user:
+                # Get latest message if any
+                latest_message = await db.messages.find_one(
+                    {"match_id": match["id"]},
+                    sort=[("created_at", -1)]
+                )
+                
+                match_data.append({
+                    "match_id": match["id"],
+                    "user": {
+                        "id": other_user["id"],
+                        "name": other_user["name"],
+                        "age": other_user.get("age"),
+                        "photos": other_user["photos"]
+                    },
+                    "similarity_score": match["similarity_score"],
+                    "match_percentage": int(match["similarity_score"] * 100),
+                    "created_at": match["created_at"],
+                    "latest_message": latest_message["message"] if latest_message else None,
+                    "latest_message_at": latest_message["created_at"] if latest_message else None
+                })
+        
+        # Sort by latest activity
+        match_data.sort(key=lambda x: x["latest_message_at"] or x["created_at"], reverse=True)
+        
+        return {"matches": match_data, "count": len(match_data)}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.post("/matches/{match_id}/message")
+async def send_message(
+    match_id: str,
+    sender_id: str = Form(...),
+    message: str = Form(...)
+):
+    """Send a message in a match"""
+    try:
+        # Verify match exists and user is part of it
+        match = await db.matches.find_one({"id": match_id})
+        if not match:
+            raise HTTPException(status_code=404, detail="Match not found")
+        
+        if sender_id not in [match["user1_id"], match["user2_id"]]:
+            raise HTTPException(status_code=403, detail="Not authorized for this match")
+        
+        # Create message
+        new_message = Message(
+            match_id=match_id,
+            sender_id=sender_id,
+            message=message
+        )
+        await db.messages.insert_one(new_message.dict())
+        
+        # Update match last_message_at
+        await db.matches.update_one(
+            {"id": match_id},
+            {"$set": {"last_message_at": datetime.utcnow()}}
+        )
+        
+        return {"message": "Message sent successfully", "message_id": new_message.id}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.get("/matches/{match_id}/messages")
+async def get_match_messages(match_id: str, user_id: str):
+    """Get messages for a match"""
+    try:
+        # Verify user is part of the match
+        match = await db.matches.find_one({"id": match_id})
+        if not match:
+            raise HTTPException(status_code=404, detail="Match not found")
+        
+        if user_id not in [match["user1_id"], match["user2_id"]]:
+            raise HTTPException(status_code=403, detail="Not authorized for this match")
+        
+        # Get messages
+        messages = await db.messages.find(
+            {"match_id": match_id}
+        ).sort("created_at", 1).to_list(1000)
+        
+        return {"messages": messages}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.get("/users/{user_id}/profile")
+async def get_user_profile(user_id: str):
+    """Get user profile"""
+    try:
+        user = await db.users.find_one({"id": user_id})
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        return User(**user)
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

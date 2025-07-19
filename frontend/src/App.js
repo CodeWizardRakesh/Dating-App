@@ -9,10 +9,12 @@ function App() {
   const [user, setUser] = useState(null);
   const [celebrities, setCelebrities] = useState([]);
   const [selectedCelebrities, setSelectedCelebrities] = useState([]);
-  const [uploadedFiles, setUploadedFiles] = useState([]);
+  const [discoveredUsers, setDiscoveredUsers] = useState([]);
+  const [currentUserIndex, setCurrentUserIndex] = useState(0);
   const [matches, setMatches] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [showMatches, setShowMatches] = useState(false);
 
   // Load celebrities on component mount
   useEffect(() => {
@@ -37,8 +39,8 @@ function App() {
     const formData = new FormData(e.target);
     
     try {
-      const response = await axios.post(`${API_URL}/api/users/register`, formData);
-      setUser({ id: response.data.user_id, ...Object.fromEntries(formData) });
+      const response = await axios.post(`${API_URL}/api/auth/register`, formData);
+      setUser(response.data.user);
       setCurrentStep('celebrities');
     } catch (error) {
       setError('Registration failed: ' + (error.response?.data?.detail || error.message));
@@ -83,12 +85,14 @@ function App() {
     setError('');
 
     try {
-      await axios.post(
-        `${API_URL}/api/users/${user.id}/preferences`, 
-        selectedCelebrities,
-        { headers: { 'Content-Type': 'application/json' } }
-      );
-      setCurrentStep('upload');
+      const formData = new FormData();
+      selectedCelebrities.forEach(id => formData.append('celebrity_ids', id));
+      formData.append('age_min', '18');
+      formData.append('age_max', '50');
+      formData.append('max_distance', '50');
+
+      await axios.post(`${API_URL}/api/users/${user.id}/preferences`, formData);
+      setCurrentStep('photos');
     } catch (error) {
       setError('Failed to save preferences: ' + (error.response?.data?.detail || error.message));
     } finally {
@@ -96,11 +100,11 @@ function App() {
     }
   };
 
-  const handleFileUpload = async (e) => {
+  const handlePhotoUpload = async (e) => {
     const files = Array.from(e.target.files);
     
-    if (files.length > 100) {
-      setError('Maximum 100 images allowed');
+    if (files.length > 6) {
+      setError('Maximum 6 photos allowed');
       return;
     }
 
@@ -111,15 +115,12 @@ function App() {
       const formData = new FormData();
       files.forEach(file => formData.append('files', file));
 
-      await axios.post(`${API_URL}/api/users/${user.id}/upload-profiles`, formData, {
+      await axios.post(`${API_URL}/api/users/${user.id}/photos`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' }
       });
 
-      setUploadedFiles(files);
-      setCurrentStep('results');
-      
-      // Load matches
-      await loadMatches();
+      setCurrentStep('discover');
+      await loadDiscoverUsers();
     } catch (error) {
       setError('Upload failed: ' + (error.response?.data?.detail || error.message));
     } finally {
@@ -127,15 +128,56 @@ function App() {
     }
   };
 
-  const loadMatches = async () => {
+  const loadDiscoverUsers = async () => {
     setLoading(true);
+    try {
+      const response = await axios.get(`${API_URL}/api/users/${user.id}/discover?limit=20`);
+      setDiscoveredUsers(response.data.users || []);
+      setCurrentUserIndex(0);
+    } catch (error) {
+      setError('Failed to load users: ' + (error.response?.data?.detail || error.message));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleUserAction = async (action) => {
+    if (currentUserIndex >= discoveredUsers.length) return;
+
+    const currentDiscoveredUser = discoveredUsers[currentUserIndex];
+    
+    try {
+      const formData = new FormData();
+      formData.append('target_user_id', currentDiscoveredUser.id);
+      formData.append('action', action);
+
+      const response = await axios.post(`${API_URL}/api/users/${user.id}/action`, formData);
+      
+      if (response.data.match_created) {
+        // Show match notification
+        alert(`🎉 It's a Match! ${response.data.similarity_score ? `${Math.round(response.data.similarity_score * 100)}% similarity` : ''}`);
+        await loadMatches();
+      }
+      
+      // Move to next user
+      setCurrentUserIndex(prev => prev + 1);
+      
+      // Load more users if we're running low
+      if (currentUserIndex >= discoveredUsers.length - 3) {
+        await loadDiscoverUsers();
+      }
+      
+    } catch (error) {
+      setError('Action failed: ' + (error.response?.data?.detail || error.message));
+    }
+  };
+
+  const loadMatches = async () => {
     try {
       const response = await axios.get(`${API_URL}/api/users/${user.id}/matches`);
       setMatches(response.data.matches || []);
     } catch (error) {
-      setError('Failed to load matches: ' + (error.response?.data?.detail || error.message));
-    } finally {
-      setLoading(false);
+      console.error('Failed to load matches:', error);
     }
   };
 
@@ -143,7 +185,7 @@ function App() {
     <div className="max-w-md mx-auto bg-white rounded-xl shadow-lg p-8">
       <h2 className="text-3xl font-bold text-gray-900 mb-6 text-center">Join FaceMatch</h2>
       <p className="text-gray-600 mb-6 text-center">
-        Find profiles similar to your favorite celebrities
+        Find your perfect match based on celebrity facial similarity
       </p>
       
       <form onSubmit={handleRegister} className="space-y-4">
@@ -167,6 +209,65 @@ function App() {
             className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
             placeholder="Enter your email"
           />
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Age</label>
+          <input
+            type="number"
+            name="age"
+            required
+            min="18"
+            max="100"
+            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+            placeholder="Your age"
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Bio</label>
+          <textarea
+            name="bio"
+            rows="3"
+            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+            placeholder="Tell us about yourself..."
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Location</label>
+          <input
+            type="text"
+            name="location"
+            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+            placeholder="City, State"
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Gender</label>
+          <select
+            name="gender"
+            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+          >
+            <option value="">Select gender</option>
+            <option value="male">Male</option>
+            <option value="female">Female</option>
+            <option value="non-binary">Non-binary</option>
+          </select>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Looking for</label>
+          <select
+            name="looking_for"
+            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+          >
+            <option value="">Select preference</option>
+            <option value="male">Men</option>
+            <option value="female">Women</option>
+            <option value="everyone">Everyone</option>
+          </select>
         </div>
         
         <button
@@ -263,145 +364,180 @@ function App() {
             disabled={loading}
             className="bg-gradient-to-r from-purple-600 to-pink-600 text-white px-8 py-3 rounded-lg font-medium hover:from-purple-700 hover:to-pink-700 disabled:opacity-50 transition-all duration-200"
           >
-            {loading ? 'Saving...' : 'Continue to Upload'}
+            {loading ? 'Saving...' : 'Continue to Photos'}
           </button>
         </div>
       )}
     </div>
   );
 
-  const renderUploadStep = () => (
+  const renderPhotosStep = () => (
     <div className="max-w-2xl mx-auto">
       <div className="text-center mb-8">
-        <h2 className="text-3xl font-bold text-gray-900 mb-2">Upload Profile Images</h2>
-        <p className="text-gray-600">Upload up to 100 profile images to find the best matches</p>
+        <h2 className="text-3xl font-bold text-gray-900 mb-2">Upload Your Photos</h2>
+        <p className="text-gray-600">Add up to 6 photos to create your dating profile</p>
       </div>
 
       <div className="bg-white rounded-xl shadow-lg p-8">
         <div className="border-2 border-dashed border-gray-300 rounded-lg p-12 text-center hover:border-purple-400 transition-colors duration-200">
           <div className="text-6xl text-gray-400 mb-4">📸</div>
-          <h3 className="text-xl font-semibold text-gray-900 mb-2">Choose Profile Images</h3>
-          <p className="text-gray-600 mb-6">Select multiple images (JPG, PNG) - up to 100 files</p>
+          <h3 className="text-xl font-semibold text-gray-900 mb-2">Choose Your Best Photos</h3>
+          <p className="text-gray-600 mb-6">Select up to 6 photos (JPG, PNG) - your first photo will be your main profile picture</p>
           
           <input
             type="file"
             multiple
             accept="image/*"
-            onChange={handleFileUpload}
+            onChange={handlePhotoUpload}
             className="hidden"
-            id="file-upload"
+            id="photo-upload"
           />
           <label
-            htmlFor="file-upload"
+            htmlFor="photo-upload"
             className="inline-block bg-gradient-to-r from-purple-600 to-pink-600 text-white px-8 py-3 rounded-lg font-medium hover:from-purple-700 hover:to-pink-700 cursor-pointer transition-all duration-200"
           >
-            {loading ? 'Processing Images...' : 'Select Images'}
+            {loading ? 'Processing Photos...' : 'Select Photos'}
           </label>
         </div>
-
-        {uploadedFiles.length > 0 && (
-          <div className="mt-6 p-4 bg-green-50 rounded-lg">
-            <p className="text-green-800 font-medium">
-              ✅ Successfully uploaded {uploadedFiles.length} images
-            </p>
-          </div>
-        )}
       </div>
     </div>
   );
 
-  const renderResultsStep = () => (
-    <div className="max-w-6xl mx-auto">
-      <div className="text-center mb-8">
-        <h2 className="text-3xl font-bold text-gray-900 mb-2">Your Celebrity Similarity Results</h2>
-        <p className="text-gray-600">
-          Your images ranked by similarity to selected celebrities
-        </p>
-        {matches.length > 0 && (
-          <div className="text-sm text-gray-500 mt-2">
-            <p>Analyzed {matches.length} of your images</p>
-            {matches[0]?.all_celebrity_scores && (
-              <p>Compared against: {matches[0].all_celebrity_scores.map(s => s.celebrity_name).join(', ')}</p>
-            )}
+  const renderDiscoverStep = () => {
+    const currentDiscoveredUser = discoveredUsers[currentUserIndex];
+    
+    if (!currentDiscoveredUser) {
+      return (
+        <div className="max-w-md mx-auto text-center py-12">
+          <div className="text-6xl text-gray-400 mb-4">💔</div>
+          <h2 className="text-2xl font-bold text-gray-900 mb-2">No more users</h2>
+          <p className="text-gray-600 mb-6">Check back later for new matches!</p>
+          <button
+            onClick={loadDiscoverUsers}
+            className="bg-purple-600 text-white px-6 py-2 rounded-lg hover:bg-purple-700"
+          >
+            Refresh
+          </button>
+        </div>
+      );
+    }
+
+    return (
+      <div className="max-w-md mx-auto">
+        <div className="bg-white rounded-xl shadow-lg overflow-hidden">
+          {/* Main Photo */}
+          <div className="h-96 bg-gray-100 relative">
+            <img
+              src={`data:image/jpeg;base64,${currentDiscoveredUser.photos[0]}`}
+              alt={currentDiscoveredUser.name}
+              className="w-full h-full object-cover"
+            />
+            <div className="absolute top-4 right-4 bg-gradient-to-r from-purple-100 to-pink-100 text-purple-800 px-3 py-1 rounded-full text-sm font-medium">
+              {currentDiscoveredUser.match_percentage}% match
+            </div>
           </div>
-        )}
+
+          {/* User Info */}
+          <div className="p-6">
+            <h3 className="text-2xl font-bold text-gray-900 mb-2">
+              {currentDiscoveredUser.name}
+              {currentDiscoveredUser.age && (
+                <span className="text-gray-600 font-normal">, {currentDiscoveredUser.age}</span>
+              )}
+            </h3>
+            
+            {currentDiscoveredUser.location && (
+              <p className="text-gray-600 mb-2">📍 {currentDiscoveredUser.location}</p>
+            )}
+            
+            {currentDiscoveredUser.bio && (
+              <p className="text-gray-700 mb-4">{currentDiscoveredUser.bio}</p>
+            )}
+
+            {/* Photo Gallery */}
+            {currentDiscoveredUser.photos.length > 1 && (
+              <div className="mb-4">
+                <div className="flex space-x-2 overflow-x-auto">
+                  {currentDiscoveredUser.photos.slice(1).map((photo, index) => (
+                    <img
+                      key={index}
+                      src={`data:image/jpeg;base64,${photo}`}
+                      alt={`${currentDiscoveredUser.name} ${index + 2}`}
+                      className="w-16 h-16 object-cover rounded-lg flex-shrink-0"
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Action Buttons */}
+            <div className="flex space-x-4">
+              <button
+                onClick={() => handleUserAction('pass')}
+                className="flex-1 bg-gray-200 text-gray-700 py-3 rounded-lg font-medium hover:bg-gray-300 transition-colors duration-200"
+              >
+                ❌ Pass
+              </button>
+              <button
+                onClick={() => handleUserAction('super_like')}
+                className="bg-blue-500 text-white px-6 py-3 rounded-lg font-medium hover:bg-blue-600 transition-colors duration-200"
+              >
+                ⭐ Super Like
+              </button>
+              <button
+                onClick={() => handleUserAction('like')}
+                className="flex-1 bg-gradient-to-r from-purple-600 to-pink-600 text-white py-3 rounded-lg font-medium hover:from-purple-700 hover:to-pink-700 transition-all duration-200"
+              >
+                💜 Like
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Progress Indicator */}
+        <div className="text-center mt-4 text-gray-500 text-sm">
+          User {currentUserIndex + 1} of {discoveredUsers.length}
+        </div>
+      </div>
+    );
+  };
+
+  const renderMatches = () => (
+    <div className="max-w-4xl mx-auto">
+      <div className="text-center mb-8">
+        <h2 className="text-3xl font-bold text-gray-900 mb-2">Your Matches</h2>
+        <p className="text-gray-600">People who liked you back</p>
       </div>
 
-      {loading ? (
-        <div className="text-center py-12">
-          <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-purple-600"></div>
-          <p className="text-gray-600 mt-4">Loading matches...</p>
-        </div>
-      ) : matches.length > 0 ? (
+      {matches.length > 0 ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {matches.map((match, index) => (
-            <div key={index} className="bg-white rounded-xl shadow-lg overflow-hidden hover:shadow-xl transition-shadow duration-200">
+          {matches.map((match) => (
+            <div key={match.match_id} className="bg-white rounded-xl shadow-lg overflow-hidden hover:shadow-xl transition-shadow duration-200">
               <div className="aspect-square bg-gray-100">
                 <img
-                  src={`data:image/jpeg;base64,${match.profile.image_base64}`}
-                  alt={`Your Image ${index + 1}`}
+                  src={`data:image/jpeg;base64,${match.user.photos[0]}`}
+                  alt={match.user.name}
                   className="w-full h-full object-cover"
                 />
               </div>
               <div className="p-4">
-                <div className="flex justify-between items-center mb-2">
-                  <span className="text-lg font-bold text-purple-600">#{match.rank}</span>
-                  <span className="bg-gradient-to-r from-purple-100 to-pink-100 text-purple-800 px-3 py-1 rounded-full text-sm font-medium">
-                    {(match.similarity_score * 100).toFixed(1)}% match
-                  </span>
-                </div>
-                <div className="mb-2">
-                  <p className="text-sm text-gray-600">Best match: <span className="font-semibold text-gray-800">{match.best_celebrity_match}</span></p>
-                </div>
-                <div className="w-full bg-gray-200 rounded-full h-2 mb-3">
-                  <div
-                    className="bg-gradient-to-r from-purple-600 to-pink-600 h-2 rounded-full transition-all duration-500"
-                    style={{ width: `${match.similarity_score * 100}%` }}
-                  ></div>
-                </div>
-                {match.all_celebrity_scores && (
-                  <div className="text-xs text-gray-500">
-                    <p className="font-medium mb-1">All celebrity similarities:</p>
-                    {match.all_celebrity_scores.map((score, idx) => (
-                      <div key={idx} className="flex justify-between">
-                        <span>{score.celebrity_name}:</span>
-                        <span>{(score.similarity_score * 100).toFixed(1)}%</span>
-                      </div>
-                    ))}
-                  </div>
+                <h3 className="text-lg font-bold text-gray-900 mb-1">{match.user.name}</h3>
+                <p className="text-gray-600 text-sm mb-2">{match.match_percentage}% celebrity similarity match</p>
+                {match.latest_message && (
+                  <p className="text-gray-700 text-sm mb-2 italic">"{match.latest_message}"</p>
                 )}
+                <button className="w-full bg-gradient-to-r from-purple-600 to-pink-600 text-white py-2 rounded-lg font-medium hover:from-purple-700 hover:to-pink-700 transition-all duration-200">
+                  Send Message
+                </button>
               </div>
             </div>
           ))}
         </div>
       ) : (
         <div className="text-center py-12">
-          <div className="text-6xl text-gray-400 mb-4">🔍</div>
-          <h3 className="text-xl font-semibold text-gray-900 mb-2">No images found</h3>
-          <p className="text-gray-600">Upload some images first to see similarity scores with your selected celebrities</p>
-          <button
-            onClick={() => setCurrentStep('celebrities')}
-            className="mt-4 bg-purple-600 text-white px-6 py-2 rounded-lg hover:bg-purple-700 transition-colors duration-200"
-          >
-            Adjust Preferences
-          </button>
-        </div>
-      )}
-
-      {matches.length > 0 && (
-        <div className="text-center mt-8">
-          <button
-            onClick={() => setCurrentStep('celebrities')}
-            className="bg-gray-600 text-white px-6 py-2 rounded-lg hover:bg-gray-700 mr-4 transition-colors duration-200"
-          >
-            Change Preferences
-          </button>
-          <button
-            onClick={() => setCurrentStep('upload')}
-            className="bg-purple-600 text-white px-6 py-2 rounded-lg hover:bg-purple-700 transition-colors duration-200"
-          >
-            Upload More Images
-          </button>
+          <div className="text-6xl text-gray-400 mb-4">💔</div>
+          <h3 className="text-xl font-semibold text-gray-900 mb-2">No matches yet</h3>
+          <p className="text-gray-600">Keep swiping to find your perfect match!</p>
         </div>
       )}
     </div>
@@ -416,15 +552,18 @@ function App() {
             <h1 className="text-2xl font-bold bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent">
               FaceMatch
             </h1>
-            {user && (
+            {user && currentStep === 'discover' && (
               <div className="flex items-center space-x-4">
-                <span className="text-gray-600">Welcome, {user.name}</span>
-                <div className="flex space-x-2">
-                  <div className={`w-3 h-3 rounded-full ${currentStep === 'register' ? 'bg-purple-600' : currentStep === 'celebrities' || currentStep === 'upload' || currentStep === 'results' ? 'bg-green-500' : 'bg-gray-300'}`}></div>
-                  <div className={`w-3 h-3 rounded-full ${currentStep === 'celebrities' ? 'bg-purple-600' : currentStep === 'upload' || currentStep === 'results' ? 'bg-green-500' : 'bg-gray-300'}`}></div>
-                  <div className={`w-3 h-3 rounded-full ${currentStep === 'upload' ? 'bg-purple-600' : currentStep === 'results' ? 'bg-green-500' : 'bg-gray-300'}`}></div>
-                  <div className={`w-3 h-3 rounded-full ${currentStep === 'results' ? 'bg-purple-600' : 'bg-gray-300'}`}></div>
-                </div>
+                <span className="text-gray-600">Hi, {user.name}!</span>
+                <button
+                  onClick={() => {
+                    setShowMatches(!showMatches);
+                    if (!showMatches) loadMatches();
+                  }}
+                  className="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 transition-colors duration-200"
+                >
+                  {showMatches ? 'Discover' : `Matches ${matches.length > 0 ? `(${matches.length})` : ''}`}
+                </button>
               </div>
             )}
           </div>
@@ -441,8 +580,9 @@ function App() {
 
         {currentStep === 'register' && renderRegisterStep()}
         {currentStep === 'celebrities' && renderCelebritiesStep()}
-        {currentStep === 'upload' && renderUploadStep()}
-        {currentStep === 'results' && renderResultsStep()}
+        {currentStep === 'photos' && renderPhotosStep()}
+        {currentStep === 'discover' && !showMatches && renderDiscoverStep()}
+        {currentStep === 'discover' && showMatches && renderMatches()}
       </div>
     </div>
   );
