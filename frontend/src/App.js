@@ -315,12 +315,15 @@ function App() {
       <div className="text-center mb-8">
         <h2 className="text-3xl font-bold text-gray-900 mb-2">Your Matches</h2>
         <p className="text-gray-600">
-          Profiles ranked by similarity to your selected celebrities
+          Your images ranked by similarity to selected celebrities
         </p>
         {matches.length > 0 && (
-          <p className="text-sm text-gray-500 mt-2">
-            Found {matches.length} potential matches
-          </p>
+          <div className="text-sm text-gray-500 mt-2">
+            <p>Analyzed {matches.length} of your images</p>
+            {matches[0]?.all_celebrity_scores && (
+              <p>Compared against: {matches[0].all_celebrity_scores.map(s => s.celebrity_name).join(', ')}</p>
+            )}
+          </div>
         )}
       </div>
 
