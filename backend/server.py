@@ -314,44 +314,64 @@ async def upload_user_profiles(user_id: str, files: List[UploadFile] = File(...)
 
 @api_router.get("/users/{user_id}/matches")
 async def get_matches(user_id: str):
-    """Get ranked matches based on similarity to user's celebrity preferences"""
+    """Get similarity scores between user's uploaded images and their selected celebrities"""
     try:
         # Get user preferences
         preferences = await db.user_preferences.find_one({"user_id": user_id})
         if not preferences:
             raise HTTPException(status_code=404, detail="User preferences not found")
         
-        composite_embedding = preferences["composite_embedding"]
+        # Get selected celebrities
+        celebrity_ids = preferences["selected_celebrities"]
+        celebrities = await db.celebrities.find({"id": {"$in": celebrity_ids}}).to_list(100)
         
-        # Get all uploaded profiles (excluding the requesting user)
-        profiles = await db.user_profiles.find({"user_id": {"$ne": user_id}}).to_list(1000)
+        if not celebrities:
+            raise HTTPException(status_code=404, detail="Selected celebrities not found")
         
-        if not profiles:
-            return {"message": "No profiles found", "matches": []}
+        # Get user's uploaded profiles
+        user_profiles = await db.user_profiles.find({"user_id": user_id}).to_list(1000)
         
-        # Calculate similarity scores
+        if not user_profiles:
+            return {"message": "No uploaded images found", "matches": []}
+        
+        # Calculate similarity scores for each user image against each celebrity
         matches = []
-        for profile in profiles:
-            similarity = calculate_similarity(composite_embedding, profile["embedding"])
+        for profile in user_profiles:
+            profile_similarities = []
             
-            match_result = MatchResult(
-                profile=UserProfile(**profile),
-                similarity_score=similarity,
-                rank=0  # Will be set after sorting
-            )
+            # Compare against each selected celebrity
+            for celebrity in celebrities:
+                similarity = calculate_similarity(profile["embedding"], celebrity["embedding"])
+                profile_similarities.append({
+                    "celebrity_name": celebrity["name"],
+                    "celebrity_id": celebrity["id"],
+                    "similarity_score": similarity
+                })
+            
+            # Get the best similarity score for this profile
+            best_similarity = max(profile_similarities, key=lambda x: x["similarity_score"])
+            
+            match_result = {
+                "profile": UserProfile(**profile),
+                "best_celebrity_match": best_similarity["celebrity_name"],
+                "similarity_score": best_similarity["similarity_score"],
+                "all_celebrity_scores": profile_similarities,
+                "rank": 0  # Will be set after sorting
+            }
             matches.append(match_result)
         
-        # Sort by similarity score (descending)
-        matches.sort(key=lambda x: x.similarity_score, reverse=True)
+        # Sort by best similarity score (descending)
+        matches.sort(key=lambda x: x["similarity_score"], reverse=True)
         
         # Assign ranks
         for i, match in enumerate(matches):
-            match.rank = i + 1
+            match["rank"] = i + 1
         
         return {
             "user_id": user_id,
-            "total_matches": len(matches),
-            "matches": [match.dict() for match in matches[:50]]  # Return top 50
+            "selected_celebrities": [{"id": c["id"], "name": c["name"]} for c in celebrities],
+            "total_images": len(matches),
+            "matches": matches
         }
         
     except Exception as e:
