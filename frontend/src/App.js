@@ -313,7 +313,7 @@ function App() {
   const renderResultsStep = () => (
     <div className="max-w-6xl mx-auto">
       <div className="text-center mb-8">
-        <h2 className="text-3xl font-bold text-gray-900 mb-2">Your Matches</h2>
+        <h2 className="text-3xl font-bold text-gray-900 mb-2">Your Celebrity Similarity Results</h2>
         <p className="text-gray-600">
           Your images ranked by similarity to selected celebrities
         </p>
